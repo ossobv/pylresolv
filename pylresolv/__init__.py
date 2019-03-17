@@ -27,7 +27,7 @@ if str == bytes:
     # "TypeError: Item in ``from list'' must be str, not unicode"
     __all__ = tuple(i.encode('ascii') for i in __all__)  # py2 madness
 
-__version__ = (0, 0)
+__version__ = (0, 1)
 
 _libresolv = ctypes.CDLL('libresolv.so')
 _res_ninit = _libresolv.__res_ninit

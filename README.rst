@@ -39,7 +39,7 @@ Will produce something like::
      (20, 'alt2.gmail-smtp-in.l.google.com')]
 
 
-2019-03-17: 0.0
+2019-03-17: 0.1
 ~~~~~~~~~~~~~~~
 
 -  Initial release.
