@@ -42,6 +42,18 @@ NS_MAXMSG = 65535   # maximum message size
 NS_MAXDNAME = 1025  # maximum domain name
 
 
+class RR(object):
+    def __init__(self, rr_type, contents):
+        self.rr_type = rr_type
+        self.contents = contents
+
+    def __str__(self):
+        return str(self.contents)
+
+    def __repr__(self):
+        return 'RR{!r}({!r})'.format(self.rr_type, self.contents)
+
+
 class ns_sect(IntEnum):
     ns_s_qd = 0     # Query: Question
     ns_s_an = 1     # Query: Answer
@@ -148,20 +160,48 @@ class ns_type(IntEnum):
     ns_t_max = 65536
 
     @classmethod
-    def handle_invalid(cls, msg, rr):
-        if rr.ns_rr_class() != ns_class.ns_c_in:
-            # Unexpected answer..?
-            return None
+    def handle_all(cls, msg, rr):
+        handler = cls.get_handler(rr.ns_rr_type())
+        return handler(msg, rr)
 
+    @classmethod
+    def handle_invalid(cls, msg, rr):
         # Very basic "not implemented" handler.
         decoded = rr.ns_rr_rdata__human()
+        return RR(rr.ns_rr_type(), decoded)
+
+    @classmethod
+    def _handle_compressed(cls, msg, rr, offset=0):
+        dstbuf = ctypes.create_string_buffer(NS_MAXDNAME)
+        bytes_read = _ns_name_uncompress(
+            msg.ns_msg_base(), msg.ns_msg_end(),
+            rr.ns_rr_rdata__offset(offset), dstbuf, len(dstbuf))
+        if bytes_read < 0:
+            return None  # strange..?
+
+        decoded = bytearray(dstbuf)
+        decoded = decoded[0:decoded.find(b'\0')]  # zero terminated string
+        try:
+            decoded = decoded.decode('utf-8')
+        except UnicodeDecodeError:
+            # Now what? Keep the binstring?
+            pass
         return decoded
 
     @classmethod
+    def handle_cname(cls, msg, rr):
+        if rr.ns_rr_type() != cls.ns_t_cname:
+            return None
+
+        contents = cls._handle_compressed(msg, rr)
+        if contents is None:
+            return None
+
+        return RR(rr.ns_rr_type(), contents)
+
+    @classmethod
     def handle_mx(cls, msg, rr):
-        if (rr.ns_rr_class() != ns_class.ns_c_in or
-                rr.ns_rr_type() != cls.ns_t_mx):
-            # Unexpected answer..?
+        if rr.ns_rr_type() != cls.ns_t_mx:
             return None
 
         priority = (
@@ -169,20 +209,38 @@ class ns_type(IntEnum):
                 rr.ns_rr_rdata(),
                 ctypes.POINTER(ctypes.c_uint16.__ctype_be__))
             .contents.value)
-        dstbuf = ctypes.create_string_buffer(NS_MAXDNAME)
-        bytes_read = _ns_name_uncompress(
-                msg.ns_msg_base(), msg.ns_msg_end(),
-                rr.ns_rr_rdata__offset(2), dstbuf, len(dstbuf))
-        if bytes_read < 0:
-            # Strange..?
-            return None
-        try:
-            decoded = bytearray(dstbuf).decode('utf-8').split('\x00')[0] or '.'
-        except UnicodeDecodeError:
-            # Unexpected encoding..?
+        contents = cls._handle_compressed(msg, rr, offset=2)
+        if contents is None:
             return None
 
-        return (priority, decoded)
+        ret = RR(rr.ns_rr_type(), contents)
+        ret.priority = priority
+        return ret
+
+    @classmethod
+    def handle_txt(cls, msg, rr):
+        if rr.ns_rr_type() != cls.ns_t_txt:
+            return None
+
+        length = (
+            ctypes.cast(rr.ns_rr_rdata(), ctypes.POINTER(ctypes.c_byte))
+            .contents.value)
+        decoded = bytearray(rr.ns_rr_rdata()[1:(length + 1)])
+        try:
+            decoded = decoded.decode('ascii')
+        except UnicodeDecodeError:
+            pass  # no idea what encoding we want.. keep the binstring
+        return RR(rr.ns_rr_type(), decoded)
+
+    @classmethod
+    def get_handler(cls, rr_type):
+        # This is a method instead of a dictionary, because the IntEnum won't
+        # accept non-integers as properties.
+        return {
+            cls.ns_t_cname: cls.handle_cname,
+            cls.ns_t_mx: cls.handle_mx,
+            cls.ns_t_txt: cls.handle_txt,
+        }.get(rr_type, cls.handle_invalid)
 
 
 class _res_state_t(ctypes.Structure):
@@ -265,7 +323,7 @@ def res_query(dname, class_=ns_class.ns_c_in, rr_type=ns_type.ns_t_a):
     return answer[0:anslen]
 
 
-def ns_parse(answer, handler=ns_type.handle_invalid):
+def ns_parse(answer, handler=ns_type.handle_all):
     """
     int ns_initparse(const u_char *msg, int msglen, ns_msg *handle)
     #define ns_msg_count(handle, section) ((handle)._counts[section] + 0)
@@ -290,6 +348,7 @@ def ns_parse(answer, handler=ns_type.handle_invalid):
             # Parse failure..?
             continue
 
+        assert rr.ns_rr_class() == ns_class.ns_c_in, rr.ns_rr_class()
         ret = handler(msg, rr)
         if ret:
             retlist.append(ret)
