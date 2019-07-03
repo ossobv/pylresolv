@@ -27,22 +27,83 @@ Most common usage
     from pylresolv import ns_parse, ns_type, res_query
 
     answer = res_query('gmail.com', rr_type=ns_type.ns_t_mx)
-    ret = ns_parse(answer, handler=ns_type.handle_mx)
+    ret = ns_parse(answer, handler=ns_type.handle_t_mx)
     print(ret)
 
-Will produce something like::
+Will produce a list of ``RR`` objects::
 
-    [(10, 'alt1.gmail-smtp-in.l.google.com'),
-     (5, 'gmail-smtp-in.l.google.com'),
-     (40, 'alt4.gmail-smtp-in.l.google.com'),
+    [RR<ns_type.ns_t_mx: 15>((40, u'alt4.gmail-smtp-in.l.google.com')),
+     RR<ns_type.ns_t_mx: 15>((30, u'alt3.gmail-smtp-in.l.google.com')),
+     RR<ns_type.ns_t_mx: 15>((10, u'alt1.gmail-smtp-in.l.google.com')),
+     RR<ns_type.ns_t_mx: 15>((20, u'alt2.gmail-smtp-in.l.google.com')),
+     RR<ns_type.ns_t_mx: 15>((5, u'gmail-smtp-in.l.google.com'))]
+
+Example from main:
+
+.. code-block:: python
+
+    from pprint import pprint
+    queries = (
+        ('gmail.com', ns_type.ns_t_ns),
+        ('gmail.com', ns_type.ns_t_a),
+        ('gmail.com', ns_type.ns_t_mx),
+        ('gmail.com', ns_type.ns_t_txt),
+        ('www.gmail.com', ns_type.ns_t_cname),
+    )
+    for qhost, qtype in queries:
+        print('Querying host {!r} type {!r}:'.format(qhost, qtype))
+        answer = res_query(qhost, rr_type=qtype)
+        ret = ns_parse(answer)
+        # ret = ns_parse(answer, handler=ns_type.handle_t_mx)
+        # ret = ns_parse(answer, handler=ns_type.handle_bin)
+        pprint([rr.contents for rr in ret])
+        print()
+
+Produces::
+
+    Querying host 'gmail.com' type <ns_type.ns_t_ns: 2>:
+    ['ns2.google.com', 'ns4.google.com', 'ns3.google.com', 'ns1.google.com']
+
+    Querying host 'gmail.com' type <ns_type.ns_t_a: 1>:
+    [bytearray(b'\xac\xd9\x11e')]
+
+    Querying host 'gmail.com' type <ns_type.ns_t_mx: 15>:
+    [(40, 'alt4.gmail-smtp-in.l.google.com'),
      (30, 'alt3.gmail-smtp-in.l.google.com'),
-     (20, 'alt2.gmail-smtp-in.l.google.com')]
+     (10, 'alt1.gmail-smtp-in.l.google.com'),
+     (20, 'alt2.gmail-smtp-in.l.google.com'),
+     (5, 'gmail-smtp-in.l.google.com')]
+
+    Querying host 'gmail.com' type <ns_type.ns_t_txt: 16>:
+    ['globalsign-smime-dv=CDYX+XFHUw2wml6/Gb8+59BsH31KzUr6c1l2BPvqKX8=',
+     'v=spf1 redirect=_spf.google.com']
+
+    Querying host 'www.gmail.com' type <ns_type.ns_t_cname: 5>:
+    ['mail.google.com']
+
+
+2019-07-03: 0.x
+~~~~~~~~~~~~~~~
+
+- Renamed ``ns_type.handle_mx`` to ``ns_type.handle_t_mx``.
+- Added:
+  - ``handle_bin``
+  - ``handle_compressed``
+  - ``handle_text``
+  - ``handle_t_cname``
+  - ``handle_t_ns```
+  - ``handle_t_txt```
+- ``ns_parse`` now wraps the returned values into ``RR`` objects, so the
+  type can be retrieved afterwards. The value can be fetched from its
+  ``contents`` property.
+- You can use ``handle_bin`` to fetch A or AAAA records.
+- ``res_query`` now raises LookupError on failure.
 
 
 2019-03-17: 0.1
 ~~~~~~~~~~~~~~~
 
--  Initial release.
+- Initial release.
 
 
 Copyright

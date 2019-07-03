@@ -165,69 +165,58 @@ class ns_type(IntEnum):
         return handler(msg, rr)
 
     @classmethod
-    def handle_invalid(cls, msg, rr):
-        # Very basic "not implemented" handler.
-        decoded = rr.ns_rr_rdata__human()
+    def handle_bin(cls, msg, rr):
+        decoded = rr.ns_rr_rdata__bin()
+        return RR(rr.ns_rr_type(), decoded)  # bytearray
+
+    @classmethod
+    def handle_compressed(cls, msg, rr):
+        decompressed = rr.ns_rr_rdata__decompressed(msg)
+        return RR(rr.ns_rr_type(), decompressed)  # binary
+
+    @classmethod
+    def handle_text(cls, msg, rr):
+        length = rr.ns_rr_rdata__be8(offset=0)
+        decoded = bytearray(rr.ns_rr_rdata()[1:(length + 1)])
+        try:
+            decoded = decoded.decode('utf-8')  # text
+        except UnicodeDecodeError:
+            pass  # binary
         return RR(rr.ns_rr_type(), decoded)
 
     @classmethod
-    def _handle_compressed(cls, msg, rr, offset=0):
-        dstbuf = ctypes.create_string_buffer(NS_MAXDNAME)
-        bytes_read = _ns_name_uncompress(
-            msg.ns_msg_base(), msg.ns_msg_end(),
-            rr.ns_rr_rdata__offset(offset), dstbuf, len(dstbuf))
-        if bytes_read < 0:
-            return None  # strange..?
-
-        decoded = bytearray(dstbuf)
-        decoded = decoded[0:decoded.find(b'\0')]  # zero terminated string
-        try:
-            decoded = decoded.decode('utf-8')
-        except UnicodeDecodeError:
-            # Now what? Keep the binstring?
-            pass
-        return decoded
-
-    @classmethod
-    def handle_cname(cls, msg, rr):
+    def handle_t_cname(cls, msg, rr):
         if rr.ns_rr_type() != cls.ns_t_cname:
-            return None
-
-        contents = cls._handle_compressed(msg, rr)
-        if contents is None:
-            return None
-
+            return None  # from "Additional section"?
+        decompressed = rr.ns_rr_rdata__decompressed(msg)
+        contents = decompressed.decode('utf-8').split('\x00')[0] or '.'
         return RR(rr.ns_rr_type(), contents)
 
     @classmethod
-    def handle_mx(cls, msg, rr):
+    def handle_t_mx(cls, msg, rr):
         if rr.ns_rr_type() != cls.ns_t_mx:
-            return None
-
-        priority = (
-            ctypes.cast(
-                rr.ns_rr_rdata(),
-                ctypes.POINTER(ctypes.c_uint16.__ctype_be__))
-            .contents.value)
-        contents = cls._handle_compressed(msg, rr, offset=2)
-        if contents is None:
-            return None
-
-        ret = RR(rr.ns_rr_type(), contents)
-        ret.priority = priority
-        return ret
+            return None  # from "Additional section"?
+        priority = rr.ns_rr_rdata__be16(offset=0)
+        decompressed = rr.ns_rr_rdata__decompressed(msg, offset=2)
+        contents = decompressed.decode('utf-8').split('\x00')[0] or '.'
+        return RR(rr.ns_rr_type(), (priority, contents))
 
     @classmethod
-    def handle_txt(cls, msg, rr):
-        if rr.ns_rr_type() != cls.ns_t_txt:
-            return None
+    def handle_t_ns(cls, msg, rr):
+        if rr.ns_rr_type() != cls.ns_t_ns:
+            return None  # from "Additional section"?
+        decompressed = rr.ns_rr_rdata__decompressed(msg)
+        contents = decompressed.decode('utf-8').split('\x00')[0] or '.'
+        return RR(rr.ns_rr_type(), contents)
 
-        length = (
-            ctypes.cast(rr.ns_rr_rdata(), ctypes.POINTER(ctypes.c_byte))
-            .contents.value)
+    @classmethod
+    def handle_t_txt(cls, msg, rr):
+        if rr.ns_rr_type() != cls.ns_t_txt:
+            return None  # from "Additional section"?
+        length = rr.ns_rr_rdata__be8(offset=0)
         decoded = bytearray(rr.ns_rr_rdata()[1:(length + 1)])
         try:
-            decoded = decoded.decode('ascii')
+            decoded = decoded.decode('utf-8')
         except UnicodeDecodeError:
             pass  # no idea what encoding we want.. keep the binstring
         return RR(rr.ns_rr_type(), decoded)
@@ -237,10 +226,11 @@ class ns_type(IntEnum):
         # This is a method instead of a dictionary, because the IntEnum won't
         # accept non-integers as properties.
         return {
-            cls.ns_t_cname: cls.handle_cname,
-            cls.ns_t_mx: cls.handle_mx,
-            cls.ns_t_txt: cls.handle_txt,
-        }.get(rr_type, cls.handle_invalid)
+            cls.ns_t_cname: cls.handle_t_cname,
+            cls.ns_t_mx: cls.handle_t_mx,
+            cls.ns_t_ns: cls.handle_t_ns,
+            cls.ns_t_txt: cls.handle_t_txt,
+        }.get(rr_type, cls.handle_bin)
 
 
 class _res_state_t(ctypes.Structure):
@@ -284,8 +274,15 @@ class _ns_rr_t(ctypes.Structure):
         ('rdata', ctypes.POINTER(ctypes.c_ubyte)),
     )
 
+    def __str__(self):
+        return '<ns_rr_t(name={} class={} type={} data={!r})>'.format(
+            self.ns_rr_name(),
+            self.ns_rr_class(), self.ns_rr_type(),
+            self.ns_rr_rdata__bin())
+
     def ns_rr_name(self):
-        return ('.' if self.name[0] == '\x00' else self.name)
+        decoded = bytearray(self.name).decode('utf-8').split('\x00')[0]
+        return decoded or '.'
 
     def ns_rr_class(self):
         return self.rr_class
@@ -299,8 +296,34 @@ class _ns_rr_t(ctypes.Structure):
     def ns_rr_rdata__offset(self, offset):
         return ctypes.byref(self.rdata.contents, offset)
 
+    def ns_rr_rdata__bin(self):
+        return bytearray(self.rdata[0:self.rdlength])
+
+    def ns_rr_rdata__be8(self, offset=0):
+        return self._ns_rr_rdata__int(ctypes.c_byte, offset=offset)
+
+    def ns_rr_rdata__be16(self, offset=0):
+        return self._ns_rr_rdata__int(
+            ctypes.c_uint16.__ctype_be__, offset=offset)
+
+    def _ns_rr_rdata__int(self, inttype, offset):
+        return (
+            ctypes.cast(
+                self.ns_rr_rdata__offset(offset), ctypes.POINTER(inttype))
+            .contents.value)
+
+    def ns_rr_rdata__decompressed(self, ns_msg, offset=0):
+        dstbuf = ctypes.create_string_buffer(NS_MAXDNAME)
+        bytes_read = _ns_name_uncompress(
+            ns_msg.ns_msg_base(), ns_msg.ns_msg_end(),
+            self.ns_rr_rdata__offset(offset), dstbuf, len(dstbuf))
+        if bytes_read < 0:
+            raise ValueError('ns_name_uncompress fail on {!r} + {!r}'.format(
+                ns_msg, self.ns_rr_rdata__bin()))
+        return bytearray(dstbuf)
+
     def ns_rr_rdata__human(self):
-        return repr(bytearray(self.rdata[0:self.rdlength]))
+        return repr(self.ns_rr_rdata__bin())
 
 
 def res_query(dname, class_=ns_class.ns_c_in, rr_type=ns_type.ns_t_a):
@@ -319,7 +342,8 @@ def res_query(dname, class_=ns_class.ns_c_in, rr_type=ns_type.ns_t_a):
         ctypes.byref(_GLOBAL_STATEP), dname.encode('utf-8'),
         class_, rr_type, answer, len(answer))
     if anslen < 0:
-        raise ValueError('res_query returned {}'.format(anslen))
+        # FIXME: should we read the global h_errno?
+        raise LookupError('res_query returned {}'.format(anslen))
     return answer[0:anslen]
 
 
@@ -364,10 +388,27 @@ if _res_ninit(ctypes.byref(_GLOBAL_STATEP)) != 0:
 
 
 if __name__ == '__main__':
-    answer = res_query('gmail.com', rr_type=ns_type.ns_t_a)
-    ret = ns_parse(answer)
-    print(ret)
+    from pprint import pprint
+    queries = (
+        ('gmail.com', ns_type.ns_t_ns),
+        ('gmail.com', ns_type.ns_t_a),
+        ('gmail.com', ns_type.ns_t_mx),
+        ('gmail.com', ns_type.ns_t_txt),
+        ('www.gmail.com', ns_type.ns_t_cname),
+    )
+    for qhost, qtype in queries:
+        print('Querying host {!r} type {!r}:'.format(qhost, qtype))
+        answer = res_query(qhost, rr_type=qtype)
+        ret = ns_parse(answer)
+        # ret = ns_parse(answer, handler=ns_type.handle_t_mx)
+        # ret = ns_parse(answer, handler=ns_type.handle_bin)
+        pprint([rr.contents for rr in ret])
+        print()
 
-    answer = res_query('gmail.com', rr_type=ns_type.ns_t_mx)
-    ret = ns_parse(answer, handler=ns_type.handle_mx)
-    print(ret)
+    print('Querying host gmail.com for CNAME:'.format(qhost, qtype))
+    try:
+        answer = res_query('gmail.com', rr_type=ns_type.ns_t_cname)
+    except LookupError as e:
+        print('got lookup error, like expected:', e)
+    else:
+        assert False, answer
