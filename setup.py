@@ -21,7 +21,7 @@ if __name__ == '__main__':
     long_descriptions = []
     with open(join(dirname(__file__), 'README.rst')) as file:
         long_descriptions.append(file.read())
-    version = '0.1'
+    version = '0.2'
 
     setup(
         name='pylresolv',

@@ -82,7 +82,7 @@ Produces::
     ['mail.google.com']
 
 
-2019-07-03: 0.x
+2019-07-03: 0.2
 ~~~~~~~~~~~~~~~
 
 - Renamed ``ns_type.handle_mx`` to ``ns_type.handle_t_mx``.
